@@ -75,7 +75,7 @@ export default function BrutalistSidebar({
   showNotice
 }: BrutalistSidebarProps) {
   return (
-    <aside className="w-full lg:w-80 border-b-4 lg:border-b-0 lg:border-r-4 border-[#141414] bg-[#D8D7D3] p-4 flex flex-col space-y-4 overflow-y-auto shrink-0 select-none">
+    <aside className="w-full lg:w-[38.2%] border-b-4 lg:border-b-0 lg:border-r-4 border-[#141414] bg-[#D8D7D3] p-4 flex flex-col space-y-4 overflow-y-auto shrink-0 select-none">
       
       {/* Settings Sub-Tabs */}
       <h3 className="text-[10px] uppercase font-black tracking-widest text-[#141414] mb-1">Налаштування</h3>

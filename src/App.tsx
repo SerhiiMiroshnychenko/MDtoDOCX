@@ -27,9 +27,9 @@ export default function App() {
   const [spacingLineHeight, setSpacingLineHeight] = useState<number>(1.25);
   const [marginSize, setMarginSize] = useState<'normal' | 'narrow' | 'wide'>('normal');
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
-  const [includeToc, setIncludeToc] = useState<boolean>(true);
-  const [pageNumbers, setPageNumbers] = useState<boolean>(true);
-  const [titlePage, setTitlePage] = useState<boolean>(true);
+  const [includeToc, setIncludeToc] = useState<boolean>(false);
+  const [pageNumbers, setPageNumbers] = useState<boolean>(false);
+  const [titlePage, setTitlePage] = useState<boolean>(false);
   const [headerText, setHeaderText] = useState<string>('');
   const [footerText, setFooterText] = useState<string>('');
   const [titlePageTitle, setTitlePageTitle] = useState<string>('');
@@ -224,7 +224,7 @@ export default function App() {
           showNotice={showNotice}
         />
 
-        <section className="flex-1 bg-white flex flex-col items-center justify-center p-10 border-b-4 lg:border-b-0 lg:border-r-4 border-[#141414]">
+        <section className="flex-1 bg-white flex flex-col items-center justify-center p-10 border-b-4 lg:border-b-0 border-[#141414]">
           {!markdown ? (
             <div
               onDragOver={handleDragOver}
