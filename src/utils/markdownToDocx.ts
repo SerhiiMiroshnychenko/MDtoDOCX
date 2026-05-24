@@ -473,9 +473,11 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       case 'list': {
         const isOrdered = token.ordered;
         token.items.forEach((item: any, idx: number) => {
-          // Parse tokens within list item
-          const itemTokens = item.tokens || [{ type: 'text', text: item.text }];
-          const runs = parseInlineRuns(itemTokens, config);
+          const reparsed = marked.lexer(item.text || '');
+          const inlineTokens = reparsed.length > 0 && reparsed[0].type === 'paragraph' && reparsed[0].tokens
+            ? reparsed[0].tokens
+            : [{ type: 'text', text: item.text || '' }];
+          const runs = parseInlineRuns(inlineTokens, config);
 
           if (isOrdered) {
             // Ordered lists - left-indented with a manual number run prefix and tab
