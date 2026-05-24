@@ -101,6 +101,9 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
       case 'del':
         runs.push(...parseInlineRuns(token.tokens, config, { ...overrides, strike: true }));
         break;
+      case 'paragraph':
+        runs.push(...parseInlineRuns(token.tokens, config, overrides));
+        break;
       case 'codespan':
         runs.push(new TextRun({
           text: token.text,
