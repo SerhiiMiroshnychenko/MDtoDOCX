@@ -611,10 +611,11 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       case 'list': {
         const isOrdered = token.ordered;
         token.items.forEach((item: any, idx: number) => {
-          const reparsed = marked.lexer(preprocessMath(item.text || ''));
-          const resolved = resolveTokens(reparsed);
-          const inlineTokens = resolved.length > 0 && resolved[0].type === 'paragraph' && resolved[0].tokens
-            ? resolved[0].tokens
+          let itemTokens = item.tokens || [];
+          // resolve math markers within the item's existing inline tokens
+          itemTokens = resolveTokens(itemTokens);
+          const inlineTokens = itemTokens.length > 0 && itemTokens[0].type === 'paragraph' && itemTokens[0].tokens
+            ? itemTokens[0].tokens
             : [{ type: 'text', text: item.text || '' }];
           const runs = parseInlineRuns(inlineTokens, config);
 
