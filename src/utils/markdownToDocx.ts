@@ -60,8 +60,20 @@ function mapCmd(cmd: string): string {
 // that the tokenizer accepts.
 
 // 1. Match \text{...} (standard LaTeX text in math mode)
+// 2. Convert numeric index to alphabetic key (texpipe tokenizer
+//    \\[a-zA-Z]+ does NOT accept digits — \TX0 would tokenize
+//    as \TX + 0, breaking the textMap lookup).
+function toAlpha(n: number): string {
+  let s = '';
+  while (n >= 0) {
+    s = String.fromCharCode(97 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  }
+  return s;
+}
+
 const TX_RE = /\\text\{([^}]*)\}/g;
-// 2. Match _{...} / ^{...} containing non-ASCII (Cyrillic etc.)
+// 3. Match _{...} / ^{...} containing non-ASCII (Cyrillic etc.)
 const NONASCII_SUB_RE = /([_^])\{([^}]*[\u0400-\u04FF\u00C0-\u024F][^}]*)\}/g;
 
 function preprocessLatex(latex: string): { latex: string; textMap: Record<string, string> } {
@@ -75,7 +87,7 @@ function preprocessLatex(latex: string): { latex: string; textMap: Record<string
 
   // Step B: extract all \text{...} into textMap
   const result = stepA.replace(TX_RE, (_, content: string) => {
-    const key = `\\TX${idx}`;
+    const key = `\\TX${toAlpha(idx)}`;
     textMap[key] = content;
     idx++;
     return key;
@@ -697,7 +709,7 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
               indent: { left: 432, hanging: 288 },
               children: [
                 new TextRun({
-                  text: `${idx + 1}.\t`,
+                  text: `${(token.start || 1) + idx}.\t`,
                   font: config.fontBody,
                   size: config.fontSizeBody * 2,
                   bold: true,
