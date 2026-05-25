@@ -15,17 +15,11 @@ import {
   Math
 } from 'docx';
 import { marked } from 'marked';
-import { mathJaxReady, convertLatex2Math } from '@micromatrix.org/docx-math-converter';
+import { DocxAdapter } from '@marciorvneto/texpipe';
+import * as docx from 'docx';
 
-// ── Lazy MathJax initialisation ──────────────────────────────
-let mathJaxInit: Promise<void> | null = null;
-
-async function ensureMathJax(): Promise<void> {
-  if (!mathJaxInit) {
-    mathJaxInit = mathJaxReady();
-  }
-  await mathJaxInit;
-}
+// ── Adapter for LaTeX → docx math objects ────────────────────
+const adapter = new DocxAdapter(docx);
 
 // ── LaTeX math preprocessor ───────────────────────────────────
 // Replace $...$ / $$...$$ with unique text markers that marked
@@ -214,7 +208,8 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
         break;
       case 'math':
         try {
-          runs.push(convertLatex2Math(token.text));
+          const mr = adapter.toMathRun(token.text);
+          runs.push(new Math({ children: [mr] }));
         } catch {
           runs.push(new TextRun({
             text: token.text,
@@ -244,8 +239,6 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
 }
 
 export async function convertMarkdownToDocx(markdown: string, config: DocxStyleConfig): Promise<Blob> {
-  await ensureMathJax();
-
   const processed = preprocessMath(markdown);
   const rawTokens = marked.lexer(processed);
   const tokens = resolveTokens(rawTokens);
@@ -634,12 +627,8 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
 
       case 'mathBlock': {
         try {
-          const mathObj = convertLatex2Math(token.text);
-          children.push(new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { before: 180, after: 180 },
-            children: [mathObj]
-          }));
+          const para = adapter.toParagraph(token.text);
+          children.push(para);
         } catch {
           children.push(new Table({
             width: { size: 100, type: WidthType.PERCENTAGE },
