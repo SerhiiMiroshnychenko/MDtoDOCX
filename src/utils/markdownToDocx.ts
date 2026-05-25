@@ -11,38 +11,45 @@ import {
   Packer,
   AlignmentType,
   Header,
-  Footer
+  Footer,
+  Math
 } from 'docx';
 import { marked } from 'marked';
+import { mathJaxReady, convertLatex2Math } from '@micromatrix.org/docx-math-converter';
+
+// ── Lazy MathJax initialisation ──────────────────────────────
+let mathJaxInit: Promise<void> | null = null;
+
+async function ensureMathJax(): Promise<void> {
+  if (!mathJaxInit) {
+    mathJaxInit = mathJaxReady();
+  }
+  await mathJaxInit;
+}
 
 // ── LaTeX math preprocessor ───────────────────────────────────
 // Replace $...$ / $$...$$ with unique text markers that marked
-// treats as plain text.  We then detect the markers during DOCX
-// generation.
-const MM = '⍂'; // APL symbol – not special in markdown
+// treats as plain text.  The markers are later resolved by
+// resolveTokens() and rendered as native Word equations.
+const MM = '⍂';
 
 function preprocessMath(src: string): string {
-  // Block math $$...$$ first (multi-line)
   src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_, content) =>
     `${MM}BM${MM}${content.trim()}${MM}/BM${MM}`
   );
-  // Inline math $...$  (single-line only)
   src = src.replace(/\$([^$\n]+?)\$/g, (_, content) =>
     `${MM}IM${MM}${content.trim()}${MM}/IM${MM}`
   );
   return src;
 }
 
-// ── resolve inline‑math markers inside a text string ──────────
-// Returns an array of { type: 'text'|'math', text: string }.
+// ── Resolve inline-math markers in a text string ──────────────
 const IM_RE = new RegExp(`${MM}IM${MM}(.*?)${MM}/IM${MM}`, 'g');
 
 function resolveInlineText(text: string): { type: string; text: string }[] {
   if (!text.includes(MM)) return [{ type: 'text', text }];
-
   const parts: { type: string; text: string }[] = [];
   let last = 0, m: RegExpExecArray | null;
-
   IM_RE.lastIndex = 0;
   while ((m = IM_RE.exec(text)) !== null) {
     if (m.index > last) parts.push({ type: 'text', text: text.slice(last, m.index) });
@@ -50,17 +57,14 @@ function resolveInlineText(text: string): { type: string; text: string }[] {
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push({ type: 'text', text: text.slice(last) });
-
   return parts;
 }
 
-// ── resolve block‑math & inline‑math markers in the token tree ─
 const BM_RE = new RegExp(`^${MM}BM${MM}(.*?)${MM}/BM${MM}$`);
 
 function resolveTokens(tokens: any[]): any[] {
   const out: any[] = [];
   for (const tok of tokens) {
-    // Block math on its own line → replace the whole paragraph
     if (tok.type === 'paragraph') {
       const raw = tok.text || '';
       const bm = raw.match(BM_RE);
@@ -69,8 +73,6 @@ function resolveTokens(tokens: any[]): any[] {
         continue;
       }
     }
-
-    // Resolve inline-math markers inside child tokens
     if (tok.tokens) {
       const flat: any[] = [];
       for (const child of tok.tokens) {
@@ -84,23 +86,26 @@ function resolveTokens(tokens: any[]): any[] {
       }
       tok.tokens = flat;
     }
-
     out.push(tok);
   }
   return out;
+}
+
+function cleanMarkers(text: string): string {
+  return text.replace(new RegExp(`${MM}(?:IM|BM)${MM}.*?${MM}/(?:IM|BM)${MM}`, 'g'), '$1');
 }
 
 // Supported Style / Theme Config
 export interface DocxStyleConfig {
   fontBody: string;
   fontHeading: string;
-  primaryColor: string; // Hex string without '#'
-  accentColor: string;  // Hex string without '#'
-  fontSizeBody: number; // pt
+  primaryColor: string;
+  accentColor: string;
+  fontSizeBody: number;
   fontSizeH1: number;
   fontSizeH2: number;
   fontSizeH3: number;
-  spacingLineHeight: number; // Line spacing multiplier (e.g. 1.25, 1.5)
+  spacingLineHeight: number;
   marginSize: 'normal' | 'narrow' | 'wide';
   orientation: 'portrait' | 'landscape';
   includeToc: boolean;
@@ -115,7 +120,6 @@ export interface DocxStyleConfig {
   titlePageDate: string;
 }
 
-// Convert theme selections to full configuration
 export const THEME_PRESETS: Record<string, {
   name: string;
   primaryColor: string;
@@ -160,12 +164,8 @@ export const THEME_PRESETS: Record<string, {
   }
 };
 
-function cleanMarkers(text: string): string {
-  return text.replace(new RegExp(`${MM}(?:IM|BM)${MM}.*?${MM}/(?:IM|BM)${MM}`, 'g'), '$1');
-}
-
-function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any = {}): TextRun[] {
-  const runs: TextRun[] = [];
+function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any = {}): (TextRun | Math)[] {
+  const runs: (TextRun | Math)[] = [];
   if (!tokens) return [];
 
   for (const token of tokens) {
@@ -213,15 +213,19 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
         runs.push(new TextRun({ text: '\n' }));
         break;
       case 'math':
-        runs.push(new TextRun({
-          text: token.text,
-          font: 'Cambria Math',
-          size: config.fontSizeBody * 2,
-          italics: true,
-          color: '7C3AED',
-          shading: { fill: 'F5F3FF' },
-          ...overrides
-        }));
+        try {
+          runs.push(convertLatex2Math(token.text));
+        } catch {
+          runs.push(new TextRun({
+            text: token.text,
+            font: 'Cambria Math',
+            size: config.fontSizeBody * 2,
+            italics: true,
+            color: '7C3AED',
+            shading: { fill: 'F5F3FF' },
+            ...overrides
+          }));
+        }
         break;
       case 'text':
       default:
@@ -240,6 +244,8 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
 }
 
 export async function convertMarkdownToDocx(markdown: string, config: DocxStyleConfig): Promise<Blob> {
+  await ensureMathJax();
+
   const processed = preprocessMath(markdown);
   const rawTokens = marked.lexer(processed);
   const tokens = resolveTokens(rawTokens);
@@ -627,41 +633,50 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       }
 
       case 'mathBlock': {
-        children.push(new Table({
-          width: { size: 100, type: WidthType.PERCENTAGE },
-          borders: {
-            top: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-            bottom: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-            left: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-            right: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-          },
-          rows: [
-            new TableRow({
-              children: [
-                new TableCell({
-                  shading: { fill: 'F5F3FF' },
-                  margins: { top: 120, bottom: 120, left: 160, right: 160 },
-                  children: [
-                    new Paragraph({
-                      alignment: AlignmentType.CENTER,
-                      children: [
-                        new TextRun({
-                          text: token.text,
-                          font: 'Cambria Math',
-                          size: 22,
-                          italics: true,
-                          color: '5B21B6',
-                        })
-                      ],
-                      spacing: { before: 0, after: 0 }
-                    })
-                  ]
-                })
-              ]
-            })
-          ]
-        }));
-        children.push(new Paragraph({ spacing: { after: 120 } }));
+        try {
+          const mathObj = convertLatex2Math(token.text);
+          children.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 180, after: 180 },
+            children: [mathObj]
+          }));
+        } catch {
+          children.push(new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            borders: {
+              top: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+              bottom: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+              left: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+              right: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+            },
+            rows: [
+              new TableRow({
+                children: [
+                  new TableCell({
+                    shading: { fill: 'F5F3FF' },
+                    margins: { top: 120, bottom: 120, left: 160, right: 160 },
+                    children: [
+                      new Paragraph({
+                        alignment: AlignmentType.CENTER,
+                        children: [
+                          new TextRun({
+                            text: token.text,
+                            font: 'Cambria Math',
+                            size: 22,
+                            italics: true,
+                            color: '5B21B6',
+                          })
+                        ],
+                        spacing: { before: 0, after: 0 }
+                      })
+                    ]
+                  })
+                ]
+              })
+            ]
+          }));
+          children.push(new Paragraph({ spacing: { after: 120 } }));
+        }
         break;
       }
 
