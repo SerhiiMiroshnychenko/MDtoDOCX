@@ -55,14 +55,26 @@ function mapCmd(cmd: string): string {
 
 // ── Preprocess LaTeX before texpipe ────────────────────────────
 // texpipe's tokenizer is ASCII-only ([a-zA-Z0-9]) and does NOT
-// handle \text{...}. We extract \text{...} content into a textMap
-// and replace with unique \TXn markers that the tokenizer accepts.
+// handle non-ASCII content (Cyrillic, Unicode). We extract such
+// content into a textMap and replace with unique \TXn markers
+// that the tokenizer accepts.
+
+// 1. Match \text{...} (standard LaTeX text in math mode)
 const TX_RE = /\\text\{([^}]*)\}/g;
+// 2. Match _{...} / ^{...} containing non-ASCII (Cyrillic etc.)
+const NONASCII_SUB_RE = /([_^])\{([^}]*[\u0400-\u04FF\u00C0-\u024F][^}]*)\}/g;
 
 function preprocessLatex(latex: string): { latex: string; textMap: Record<string, string> } {
   const textMap: Record<string, string> = {};
   let idx = 0;
-  const result = latex.replace(TX_RE, (_, content: string) => {
+
+  // Step A: wrap _{Cyrillic} / ^{Cyrillic} in \text{...} so they
+  // get extracted in step B.  This avoids texpipe's ASCII tokenizer.
+  const stepA = latex.replace(NONASCII_SUB_RE, (_, prefix, content) =>
+    `${prefix}{\\text{${content}}}`);
+
+  // Step B: extract all \text{...} into textMap
+  const result = stepA.replace(TX_RE, (_, content: string) => {
     const key = `\\TX${idx}`;
     textMap[key] = content;
     idx++;
