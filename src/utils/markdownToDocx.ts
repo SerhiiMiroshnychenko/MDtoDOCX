@@ -37,6 +37,7 @@ const CMD: Record<string, string> = {
   '\\psi': 'ψ', '\\omega': 'ω', '\\Gamma': 'Γ', '\\Theta': 'Θ',
   '\\Lambda': 'Λ', '\\Xi': 'Ξ', '\\Pi': 'Π', '\\Sigma': 'Σ',
   '\\Phi': 'Φ', '\\Psi': 'Ψ', '\\Omega': 'Ω', '\\lim': 'lim',
+  '\\circ': '°',
 };
 
 function ommRun(text: string): any {
@@ -52,46 +53,68 @@ function mapCmd(cmd: string): string {
   return CMD[cmd] || cmd.slice(1);
 }
 
-function astToOMML(latex: string): any[] {
-  const parser = new LatexParser(latex);
-  const ast = parser.parse();
-  return walk(ast).flat();
+// ── Preprocess LaTeX before texpipe ────────────────────────────
+// texpipe's tokenizer is ASCII-only ([a-zA-Z0-9]) and does NOT
+// handle \text{...}. We extract \text{...} content into a textMap
+// and replace with unique \TXn markers that the tokenizer accepts.
+const TX_RE = /\\text\{([^}]*)\}/g;
+
+function preprocessLatex(latex: string): { latex: string; textMap: Record<string, string> } {
+  const textMap: Record<string, string> = {};
+  let idx = 0;
+  const result = latex.replace(TX_RE, (_, content: string) => {
+    const key = `\\TX${idx}`;
+    textMap[key] = content;
+    idx++;
+    return key;
+  });
+  return { latex: result, textMap };
 }
 
-function walk(node: any): any[] {
+function astToOMML(latex: string): any[] {
+  const { latex: processedLatex, textMap } = preprocessLatex(latex);
+  const parser = new LatexParser(processedLatex);
+  const ast = parser.parse();
+  return walk(ast, textMap).flat();
+}
+
+function walk(node: any, textMap?: Record<string, string>): any[] {
   switch (node.type) {
     case 'root':
     case 'group':
-      return (node.children || []).map(walk).flat();
+      return (node.children || []).map(c => walk(c, textMap)).flat();
     case 'text':
       return [ommRun(node.value)];
     case 'symbol':
     case 'operator':
+      if (node.value && textMap?.[node.value] !== undefined) {
+        return [ommRun(textMap[node.value])];
+      }
       return [ommRun(mapCmd(node.value))];
     case 'fraction': {
       const frac = new XmlComponent('m:f');
       const num = new XmlComponent('m:num');
-      walk(node.numerator).forEach(c => num.root.push(c));
+      walk(node.numerator, textMap).forEach(c => num.root.push(c));
       const den = new XmlComponent('m:den');
-      walk(node.denominator).forEach(c => den.root.push(c));
+      walk(node.denominator, textMap).forEach(c => den.root.push(c));
       frac.root.push(num, den);
       return [frac];
     }
     case 'subscript': {
       const sSub = new XmlComponent('m:sSub');
       const e = new XmlComponent('m:e');
-      walk(node.base).forEach(c => e.root.push(c));
+      walk(node.base, textMap).forEach(c => e.root.push(c));
       const sub = new XmlComponent('m:sub');
-      walk(node.sub).forEach(c => sub.root.push(c));
+      walk(node.sub, textMap).forEach(c => sub.root.push(c));
       sSub.root.push(e, sub);
       return [sSub];
     }
     case 'superscript': {
       const sSup = new XmlComponent('m:sSup');
       const e = new XmlComponent('m:e');
-      walk(node.base).forEach(c => e.root.push(c));
+      walk(node.base, textMap).forEach(c => e.root.push(c));
       const sup = new XmlComponent('m:sup');
-      walk(node.sup).forEach(c => sup.root.push(c));
+      walk(node.sup, textMap).forEach(c => sup.root.push(c));
       sSup.root.push(e, sup);
       return [sSup];
     }
@@ -292,13 +315,20 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
               }));
             }
           } else {
-            runs.push(new TextRun({
-              text: part.text,
-              font: config.fontBody,
-              size: config.fontSizeBody * 2,
-              color: '1F2937',
-              ...overrides
-            }));
+            // Workaround for marked v18 not parsing **bold** inside list items:
+            // manually handle **...** markers in text content.
+            const segs = part.text.split(/\*\*(.+?)\*\*/g);
+            for (let i = 0; i < segs.length; i++) {
+              if (!segs[i]) continue;
+              runs.push(new TextRun({
+                text: segs[i],
+                font: config.fontBody,
+                size: config.fontSizeBody * 2,
+                color: '1F2937',
+                ...overrides,
+                ...(i % 2 === 1 ? { bold: true } : {})
+              }));
+            }
           }
         }
         break;
