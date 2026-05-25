@@ -553,7 +553,13 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       }
 
       case 'blockquote': {
-        const qTokens = token.tokens || [{ type: 'text', text: token.text }];
+        const qResolved = resolveTokens(token.tokens || []);
+        const qRuns: any[] = [];
+        for (const t of qResolved) {
+          if (t.tokens) {
+            qRuns.push(...parseInlineRuns(t.tokens, config, { italics: true, color: '4B5563' }));
+          }
+        }
         children.push(new Paragraph({
           indent: { left: 720 },
           border: {
@@ -564,7 +570,7 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
               space: 12
             }
           },
-          children: parseInlineRuns(qTokens, config, { italics: true, color: '4B5563' }),
+          children: qRuns,
           spacing: { before: 120, after: 120, line: Math.round(config.spacingLineHeight * 240) }
         }));
         break;
