@@ -12,7 +12,7 @@ import {
   AlignmentType,
   Header,
   Footer,
-  Math,
+  Math as OMML,
   XmlComponent
 } from 'docx';
 import { marked } from 'marked';
@@ -237,8 +237,8 @@ export const THEME_PRESETS: Record<string, {
   }
 };
 
-function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any = {}): (TextRun | Math)[] {
-  const runs: (TextRun | Math)[] = [];
+function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any = {}): (TextRun | OMML)[] {
+  const runs: (TextRun | OMML)[] = [];
   if (!tokens) return [];
 
   for (const token of tokens) {
@@ -288,7 +288,7 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
       case 'math':
         try {
           const ommChildren = astToOMML(token.text);
-          runs.push(new Math({ children: ommChildren }));
+          runs.push(new OMML({ children: ommChildren }));
         } catch {
           runs.push(new TextRun({
             text: token.text,
@@ -709,7 +709,7 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
           const ommChildren = astToOMML(token.text);
           children.push(new Paragraph({
             alignment: AlignmentType.CENTER,
-            children: [new Math({ children: ommChildren })],
+            children: [new OMML({ children: ommChildren })],
             spacing: { before: 120, after: 120 }
           }));
         } catch {
