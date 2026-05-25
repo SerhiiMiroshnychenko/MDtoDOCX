@@ -147,19 +147,25 @@ function resolveTokens(tokens: any[]): any[] {
       }
     }
     if (tok.tokens) {
-      const flat: any[] = [];
-      for (const child of tok.tokens) {
-        if (child.type === 'text') {
-          flat.push(...resolveInlineText(child.text).map(p =>
-            p.type === 'math' ? { type: 'math', text: p.text, tokens: [] } : p
-          ));
-        } else {
-          flat.push(child);
-        }
-      }
-      tok.tokens = flat;
+      tok.tokens = resolveDeep(tok.tokens);
     }
     out.push(tok);
+  }
+  return out;
+}
+
+function resolveDeep(list: any[]): any[] {
+  const out: any[] = [];
+  for (const tok of list) {
+    if (tok.type === 'text') {
+      out.push(...resolveInlineText(tok.text).map(p =>
+        p.type === 'math' ? { type: 'math', text: p.text, tokens: [] } : p
+      ));
+    } else if (tok.tokens) {
+      out.push({ ...tok, tokens: resolveDeep(tok.tokens) });
+    } else {
+      out.push(tok);
+    }
   }
   return out;
 }
