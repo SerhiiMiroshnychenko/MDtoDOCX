@@ -146,26 +146,7 @@ function resolveTokens(tokens: any[]): any[] {
         continue;
       }
     }
-    if (tok.tokens) {
-      tok.tokens = resolveDeep(tok.tokens);
-    }
     out.push(tok);
-  }
-  return out;
-}
-
-function resolveDeep(list: any[]): any[] {
-  const out: any[] = [];
-  for (const tok of list) {
-    if (tok.type === 'text') {
-      out.push(...resolveInlineText(tok.text).map(p =>
-        p.type === 'math' ? { type: 'math', text: p.text, tokens: [] } : p
-      ));
-    } else if (tok.tokens) {
-      out.push({ ...tok, tokens: resolveDeep(tok.tokens) });
-    } else {
-      out.push(tok);
-    }
   }
   return out;
 }
@@ -291,32 +272,37 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
       case 'br':
         runs.push(new TextRun({ text: '\n' }));
         break;
-      case 'math':
-        try {
-          const ommChildren = astToOMML(token.text);
-          runs.push(new OMML({ children: ommChildren }));
-        } catch {
-          runs.push(new TextRun({
-            text: token.text,
-            font: 'Cambria Math',
-            size: config.fontSizeBody * 2,
-            italics: true,
-            color: '7C3AED',
-            shading: { fill: 'F5F3FF' },
-            ...overrides
-          }));
+      case 'text':
+      default: {
+        const parts = resolveInlineText(token.text || '');
+        for (const part of parts) {
+          if (part.type === 'math') {
+            try {
+              const ommChildren = astToOMML(part.text);
+              runs.push(new OMML({ children: ommChildren }));
+            } catch {
+              runs.push(new TextRun({
+                text: part.text,
+                font: 'Cambria Math',
+                size: config.fontSizeBody * 2,
+                italics: true,
+                color: '7C3AED',
+                shading: { fill: 'F5F3FF' },
+                ...overrides
+              }));
+            }
+          } else {
+            runs.push(new TextRun({
+              text: part.text,
+              font: config.fontBody,
+              size: config.fontSizeBody * 2,
+              color: '1F2937',
+              ...overrides
+            }));
+          }
         }
         break;
-      case 'text':
-      default:
-        runs.push(new TextRun({
-          text: token.text,
-          font: config.fontBody,
-          size: config.fontSizeBody * 2,
-          color: '1F2937',
-          ...overrides
-        }));
-        break;
+      }
     }
   }
 
