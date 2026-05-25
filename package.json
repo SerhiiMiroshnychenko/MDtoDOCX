@@ -14,7 +14,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "@marciorvneto/texpipe": "^0.3.0",
-    "docx": "^9.6.1",
+    "docx": "^8.5.0",
     "lucide-react": "^0.546.0",
     "marked": "^18.0.4",
     "motion": "^12.23.24",
