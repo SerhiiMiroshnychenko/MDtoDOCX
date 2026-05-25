@@ -15,56 +15,20 @@ import {
 } from 'docx';
 import { marked } from 'marked';
 
-// ── LaTeX Math Extensions for Marked ──────────────────────────
-// Inline math: $...$
-export const mathInlineExtension = {
-  name: 'mathInline',
-  level: 'inline' as const,
-  start(src: string) {
-    const i = src.indexOf('$');
-    if (i === -1) return -1;
-    if (src[i + 1] === '$') return -1;
-    return i;
-  },
-  tokenizer(src: string) {
-    const match = src.match(/^(\$)([^$\n]+?)\1/);
-    if (match) {
-      return {
-        type: 'math',
-        raw: match[0],
-        tokens: [],
-        text: match[2].trim(),
-      };
-    }
-  },
-  renderer(token: any) {
-    return `$${token.text}$`;
-  }
-};
-
-// Display / block math: $$...$$
-export const mathDisplayExtension = {
-  name: 'mathDisplay',
-  level: 'block' as const,
-  start(src: string) { return src.indexOf('$$'); },
-  tokenizer(src: string) {
-    const match = src.match(/^\$\$([\s\S]+?)\$\$/);
-    if (match) {
-      return {
-        type: 'mathBlock',
-        raw: match[0],
-        tokens: [],
-        text: match[1].trim(),
-      };
-    }
-  },
-  renderer(token: any) {
-    return `\n\n$${token.text}$$\n\n`;
-  }
-};
-
-// Register the extensions with marked
-marked.use({ extensions: [mathInlineExtension, mathDisplayExtension] });
+// ── Preprocessor: replace $...$ / $$...$$ with HTML comments ──
+// marked passes HTML comments through as 'html' tokens,
+// which we then detect and render as math in the DOCX output.
+function preprocessMath(src: string): string {
+  // 1. Block math: $$...$$  (multi-line allowed)
+  src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_, content) =>
+    `<!--BM:${encodeURIComponent(content.trim())}-->`
+  );
+  // 2. Inline math: $...$  (single-line only)
+  src = src.replace(/\$([^$\n]+?)\$/g, (_, content) =>
+    `<!--IM:${encodeURIComponent(content.trim())}-->`
+  );
+  return src;
+}
 
 // Supported Style / Theme Config
 export interface DocxStyleConfig {
@@ -188,17 +152,30 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
       case 'br':
         runs.push(new TextRun({ text: '\n' }));
         break;
-      case 'math':
+      case 'html': {
+        const im = token.text.match(/^<!--IM:(.*?)-->$/);
+        if (im) {
+          runs.push(new TextRun({
+            text: decodeURIComponent(im[1]),
+            font: 'Cambria Math',
+            size: config.fontSizeBody * 2,
+            italics: true,
+            color: '7C3AED',
+            shading: { fill: 'F5F3FF' },
+            ...overrides
+          }));
+          break;
+        }
+        // Fall through: other HTML rendered as plain text
         runs.push(new TextRun({
           text: token.text,
-          font: 'Cambria Math',
+          font: config.fontBody,
           size: config.fontSizeBody * 2,
-          italics: true,
-          color: '7C3AED',
-          shading: { fill: 'F5F3FF' },
+          color: '1F2937',
           ...overrides
         }));
         break;
+      }
       case 'text':
       default:
         runs.push(new TextRun({
@@ -216,7 +193,7 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
 }
 
 export async function convertMarkdownToDocx(markdown: string, config: DocxStyleConfig): Promise<Blob> {
-  const tokens = marked.lexer(markdown);
+  const tokens = marked.lexer(preprocessMath(markdown));
   const children: any[] = [];
 
   // 1. Optional Cover / Title Page
@@ -637,43 +614,47 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
         break;
       }
 
-      case 'mathBlock': {
-        children.push(new Table({
-          width: { size: 100, type: WidthType.PERCENTAGE },
-          borders: {
-            top: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-            bottom: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-            left: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-            right: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-          },
-          rows: [
-            new TableRow({
-              children: [
-                new TableCell({
-                  shading: { fill: 'F5F3FF' },
-                  margins: { top: 120, bottom: 120, left: 160, right: 160 },
-                  children: [
-                    new Paragraph({
-                      alignment: AlignmentType.CENTER,
-                      children: [
-                        new TextRun({
-                          text: token.text,
-                          font: 'Cambria Math',
-                          size: 22,
-                          italics: true,
-                          color: '5B21B6',
-                        })
-                      ],
-                      spacing: { before: 0, after: 0 }
-                    })
-                  ]
-                })
-              ]
-            })
-          ]
-        }));
-        children.push(new Paragraph({ spacing: { after: 120 } }));
-        break;
+      case 'html': {
+        const bm = token.text.match(/^<!--BM:(.*?)-->$/);
+        if (bm) {
+          children.push(new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            borders: {
+              top: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+              bottom: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+              left: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+              right: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+            },
+            rows: [
+              new TableRow({
+                children: [
+                  new TableCell({
+                    shading: { fill: 'F5F3FF' },
+                    margins: { top: 120, bottom: 120, left: 160, right: 160 },
+                    children: [
+                      new Paragraph({
+                        alignment: AlignmentType.CENTER,
+                        children: [
+                          new TextRun({
+                            text: decodeURIComponent(bm[1]),
+                            font: 'Cambria Math',
+                            size: 22,
+                            italics: true,
+                            color: '5B21B6',
+                          })
+                        ],
+                        spacing: { before: 0, after: 0 }
+                      })
+                    ]
+                  })
+                ]
+              })
+            ]
+          }));
+          children.push(new Paragraph({ spacing: { after: 120 } }));
+          break;
+        }
+        break; // skip other HTML
       }
 
       default:
