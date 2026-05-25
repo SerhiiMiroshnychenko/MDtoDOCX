@@ -12,14 +12,93 @@ import {
   AlignmentType,
   Header,
   Footer,
-  Math
+  Math,
+  XmlComponent
 } from 'docx';
 import { marked } from 'marked';
-import { DocxAdapter } from '@marciorvneto/texpipe';
-import * as docx from 'docx';
+import { LatexParser } from '@marciorvneto/texpipe';
 
-// ── Adapter for LaTeX → docx math objects ────────────────────
-const adapter = new DocxAdapter(docx);
+// ── Direct OMML (Office Math Markup Language) builder ────────
+// Generates OMML XML using docx's low-level XmlComponent,
+// bypassing docx Math class internals that cause version-specific errors.
+const CMD: Record<string, string> = {
+  '\\sum': '∑', '\\int': '∫', '\\prod': '∏', '\\oint': '∮',
+  '\\iint': '∬', '\\iiint': '∭', '\\bigcup': '⋃', '\\bigcap': '⋂',
+  '\\partial': '∂', '\\nabla': '∇', '\\infty': '∞', '\\Delta': 'Δ',
+  '\\delta': 'δ', '\\cdot': '⋅', '\\times': '×', '\\approx': '≈',
+  '\\ne': '≠', '\\le': '≤', '\\ge': '≥', '\\pm': '±',
+  '\\rightarrow': '→', '\\leftrightarrow': '↔', '\\equiv': '≡',
+  '\\sim': '∼', '\\propto': '∝', '\\subset': '⊂', '\\subseteq': '⊆',
+  '\\in': '∈', '\\forall': '∀', '\\exists': '∃', '\\alpha': 'α',
+  '\\beta': 'β', '\\gamma': 'γ', '\\epsilon': 'ϵ', '\\zeta': 'ζ',
+  '\\eta': 'η', '\\theta': 'θ', '\\lambda': 'λ', '\\mu': 'μ',
+  '\\nu': 'ν', '\\xi': 'ξ', '\\pi': 'π', '\\rho': 'ρ',
+  '\\sigma': 'σ', '\\tau': 'τ', '\\phi': 'ϕ', '\\chi': 'χ',
+  '\\psi': 'ψ', '\\omega': 'ω', '\\Gamma': 'Γ', '\\Theta': 'Θ',
+  '\\Lambda': 'Λ', '\\Xi': 'Ξ', '\\Pi': 'Π', '\\Sigma': 'Σ',
+  '\\Phi': 'Φ', '\\Psi': 'Ψ', '\\Omega': 'Ω', '\\lim': 'lim',
+};
+
+function ommRun(text: string): any {
+  const run = new XmlComponent('m:r');
+  const t = new XmlComponent('m:t');
+  t.root.push(text);
+  run.root.push(t);
+  return run;
+}
+
+function mapCmd(cmd: string): string {
+  if (!cmd.startsWith('\\')) return cmd;
+  return CMD[cmd] || cmd.slice(1);
+}
+
+function astToOMML(latex: string): any[] {
+  const parser = new LatexParser(latex);
+  const ast = parser.parse();
+  return walk(ast).flat();
+}
+
+function walk(node: any): any[] {
+  switch (node.type) {
+    case 'root':
+    case 'group':
+      return (node.children || []).map(walk).flat();
+    case 'text':
+      return [ommRun(node.value)];
+    case 'symbol':
+    case 'operator':
+      return [ommRun(mapCmd(node.value))];
+    case 'fraction': {
+      const frac = new XmlComponent('m:f');
+      const num = new XmlComponent('m:num');
+      walk(node.numerator).forEach(c => num.root.push(c));
+      const den = new XmlComponent('m:den');
+      walk(node.denominator).forEach(c => den.root.push(c));
+      frac.root.push(num, den);
+      return [frac];
+    }
+    case 'subscript': {
+      const sSub = new XmlComponent('m:sSub');
+      const e = new XmlComponent('m:e');
+      walk(node.base).forEach(c => e.root.push(c));
+      const sub = new XmlComponent('m:sub');
+      walk(node.sub).forEach(c => sub.root.push(c));
+      sSub.root.push(e, sub);
+      return [sSub];
+    }
+    case 'superscript': {
+      const sSup = new XmlComponent('m:sSup');
+      const e = new XmlComponent('m:e');
+      walk(node.base).forEach(c => e.root.push(c));
+      const sup = new XmlComponent('m:sup');
+      walk(node.sup).forEach(c => sup.root.push(c));
+      sSup.root.push(e, sup);
+      return [sSup];
+    }
+    default:
+      return [ommRun('')];
+  }
+}
 
 // ── LaTeX math preprocessor ───────────────────────────────────
 // Replace $...$ / $$...$$ with unique text markers that marked
@@ -208,8 +287,8 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
         break;
       case 'math':
         try {
-          const mr = adapter.toMathRun(token.text);
-          runs.push(new Math({ children: [mr] }));
+          const ommChildren = astToOMML(token.text);
+          runs.push(new Math({ children: ommChildren }));
         } catch {
           runs.push(new TextRun({
             text: token.text,
@@ -627,8 +706,12 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
 
       case 'mathBlock': {
         try {
-          const para = adapter.toParagraph(token.text);
-          children.push(para);
+          const ommChildren = astToOMML(token.text);
+          children.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [new Math({ children: ommChildren })],
+            spacing: { before: 120, after: 120 }
+          }));
         } catch {
           children.push(new Table({
             width: { size: 100, type: WidthType.PERCENTAGE },
