@@ -15,19 +15,79 @@ import {
 } from 'docx';
 import { marked } from 'marked';
 
-// ── Preprocessor: replace $...$ / $$...$$ with HTML comments ──
-// marked passes HTML comments through as 'html' tokens,
-// which we then detect and render as math in the DOCX output.
+// ── LaTeX math preprocessor ───────────────────────────────────
+// Replace $...$ / $$...$$ with unique text markers that marked
+// treats as plain text.  We then detect the markers during DOCX
+// generation.
+const MM = '⍂'; // APL symbol – not special in markdown
+
 function preprocessMath(src: string): string {
-  // 1. Block math: $$...$$  (multi-line allowed)
+  // Block math $$...$$ first (multi-line)
   src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_, content) =>
-    `<!--BM:${encodeURIComponent(content.trim())}-->`
+    `${MM}BM${MM}${content.trim()}${MM}/BM${MM}`
   );
-  // 2. Inline math: $...$  (single-line only)
+  // Inline math $...$  (single-line only)
   src = src.replace(/\$([^$\n]+?)\$/g, (_, content) =>
-    `<!--IM:${encodeURIComponent(content.trim())}-->`
+    `${MM}IM${MM}${content.trim()}${MM}/IM${MM}`
   );
   return src;
+}
+
+// ── resolve inline‑math markers inside a text string ──────────
+// Returns an array of { type: 'text'|'math', text: string }.
+const IM_RE = new RegExp(`${MM}IM${MM}(.*?)${MM}/IM${MM}`, 'g');
+
+function resolveInlineText(text: string): { type: string; text: string }[] {
+  if (!text.includes(MM)) return [{ type: 'text', text }];
+
+  const parts: { type: string; text: string }[] = [];
+  let last = 0, m: RegExpExecArray | null;
+
+  IM_RE.lastIndex = 0;
+  while ((m = IM_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push({ type: 'text', text: text.slice(last, m.index) });
+    parts.push({ type: 'math', text: m[1] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push({ type: 'text', text: text.slice(last) });
+
+  return parts;
+}
+
+// ── resolve block‑math & inline‑math markers in the token tree ─
+const BM_RE = new RegExp(`^${MM}BM${MM}(.*?)${MM}/BM${MM}$`);
+
+function resolveTokens(tokens: any[]): any[] {
+  const out: any[] = [];
+  for (const tok of tokens) {
+    // Block math on its own line → replace the whole paragraph
+    if (tok.type === 'paragraph') {
+      const raw = tok.text || '';
+      const bm = raw.match(BM_RE);
+      if (bm) {
+        out.push({ type: 'mathBlock', text: bm[1] });
+        continue;
+      }
+    }
+
+    // Resolve inline-math markers inside child tokens
+    if (tok.tokens) {
+      const flat: any[] = [];
+      for (const child of tok.tokens) {
+        if (child.type === 'text') {
+          flat.push(...resolveInlineText(child.text).map(p =>
+            p.type === 'math' ? { type: 'math', text: p.text, tokens: [] } : p
+          ));
+        } else {
+          flat.push(child);
+        }
+      }
+      tok.tokens = flat;
+    }
+
+    out.push(tok);
+  }
+  return out;
 }
 
 // Supported Style / Theme Config
@@ -65,42 +125,45 @@ export const THEME_PRESETS: Record<string, {
 }> = {
   slate: {
     name: 'Slate Professional',
-    primaryColor: '1E293B', // Slate 800
-    accentColor: '0284C7',  // Sky 600
+    primaryColor: '1E293B',
+    accentColor: '0284C7',
     fontHeading: 'Arial',
     fontBody: 'Calibri'
   },
   classic: {
     name: 'Classic Editorial',
-    primaryColor: '111827', // Gray 900
-    accentColor: '7C2D12',  // Orange 900
+    primaryColor: '111827',
+    accentColor: '7C2D12',
     fontHeading: 'Georgia',
     fontBody: 'Times New Roman'
   },
   teal: {
     name: 'Teal Modern',
-    primaryColor: '0F766E', // Teal 700
-    accentColor: '0D9488',  // Teal 600
+    primaryColor: '0F766E',
+    accentColor: '0D9488',
     fontHeading: 'Trebuchet MS',
     fontBody: 'Arial'
   },
   warm: {
     name: 'Creative Auburn',
-    primaryColor: '78350F', // Amber 900
-    accentColor: '9A3412',  // Red-Orange
+    primaryColor: '78350F',
+    accentColor: '9A3412',
     fontHeading: 'Garamond',
     fontBody: 'Garamond'
   },
   monochrome: {
     name: 'Stealth Mono',
     primaryColor: '000000',
-    accentColor: '4B5563',  // Gray 600
+    accentColor: '4B5563',
     fontHeading: 'Courier New',
     fontBody: 'Courier New'
   }
 };
 
-// Help convert markdown lists and other tokens to DOCX paragraphs and tables
+function cleanMarkers(text: string): string {
+  return text.replace(new RegExp(`${MM}(?:IM|BM)${MM}.*?${MM}/(?:IM|BM)${MM}`, 'g'), '$1');
+}
+
 function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any = {}): TextRun[] {
   const runs: TextRun[] = [];
   if (!tokens) return [];
@@ -124,10 +187,8 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
           text: token.text,
           font: 'Courier New',
           size: (config.fontSizeBody - 1) * 2,
-          color: '9D174D', // Pinkish/Purple for inline code
-          shading: {
-            fill: 'F3F4F6',
-          },
+          color: '9D174D',
+          shading: { fill: 'F3F4F6' },
           ...overrides
         }));
         break;
@@ -140,7 +201,6 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
           underline: {},
           ...overrides
         }));
-        // Append URL in parentheses for readable print doc
         runs.push(new TextRun({
           text: ` (${token.href})`,
           font: 'Courier New',
@@ -152,37 +212,24 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
       case 'br':
         runs.push(new TextRun({ text: '\n' }));
         break;
-      case 'html': {
-        const im = token.text.match(/^<!--IM:(.*?)-->$/);
-        if (im) {
-          runs.push(new TextRun({
-            text: decodeURIComponent(im[1]),
-            font: 'Cambria Math',
-            size: config.fontSizeBody * 2,
-            italics: true,
-            color: '7C3AED',
-            shading: { fill: 'F5F3FF' },
-            ...overrides
-          }));
-          break;
-        }
-        // Fall through: other HTML rendered as plain text
+      case 'math':
         runs.push(new TextRun({
           text: token.text,
-          font: config.fontBody,
+          font: 'Cambria Math',
           size: config.fontSizeBody * 2,
-          color: '1F2937',
+          italics: true,
+          color: '7C3AED',
+          shading: { fill: 'F5F3FF' },
           ...overrides
         }));
         break;
-      }
       case 'text':
       default:
         runs.push(new TextRun({
           text: token.text,
           font: config.fontBody,
           size: config.fontSizeBody * 2,
-          color: '1F2937', // Off-black body
+          color: '1F2937',
           ...overrides
         }));
         break;
@@ -193,34 +240,30 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
 }
 
 export async function convertMarkdownToDocx(markdown: string, config: DocxStyleConfig): Promise<Blob> {
-  const tokens = marked.lexer(preprocessMath(markdown));
+  const processed = preprocessMath(markdown);
+  const rawTokens = marked.lexer(processed);
+  const tokens = resolveTokens(rawTokens);
+
   const children: any[] = [];
 
-  // 1. Optional Cover / Title Page
+  // 1. Cover / Title Page
   if (config.titlePage) {
-    // Top space
-    children.push(new Paragraph({ spacing: { before: 2880 } })); // ~2 inches
+    children.push(new Paragraph({ spacing: { before: 2880 } }));
 
-    // Accent line
     children.push(new Paragraph({
       border: {
-        bottom: {
-          color: config.primaryColor,
-          style: BorderStyle.SINGLE,
-          size: 24, // 3pt thickness
-        }
+        bottom: { color: config.primaryColor, style: BorderStyle.SINGLE, size: 24 }
       },
       spacing: { after: 240 }
     }));
 
-    // Document Title
     children.push(new Paragraph({
       alignment: AlignmentType.LEFT,
       children: [
         new TextRun({
           text: config.titlePageTitle || 'Untitled Document',
           font: config.fontHeading,
-          size: (config.fontSizeH1 + 8) * 2, // Bigger for cover title
+          size: (config.fontSizeH1 + 8) * 2,
           bold: true,
           color: config.primaryColor
         })
@@ -228,7 +271,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       spacing: { after: 120 }
     }));
 
-    // Subtitle
     if (config.titlePageSubtitle) {
       children.push(new Paragraph({
         alignment: AlignmentType.LEFT,
@@ -241,13 +283,12 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
             color: '4B5563'
           })
         ],
-        spacing: { after: 2880 } // Space below title/subtitle block
+        spacing: { after: 2880 }
       }));
     } else {
       children.push(new Paragraph({ spacing: { before: 2160 } }));
     }
 
-    // Author & Organization Metadata block
     if (config.titlePageAuthor || config.titlePageOrg || config.titlePageDate) {
       if (config.titlePageAuthor) {
         children.push(new Paragraph({
@@ -278,25 +319,17 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       }
     }
 
-    // Accent strip at bottom of cover page
     children.push(new Paragraph({
       border: {
-        top: {
-          color: config.accentColor,
-          style: BorderStyle.SINGLE,
-          size: 8,
-        }
+        top: { color: config.accentColor, style: BorderStyle.SINGLE, size: 8 }
       },
       spacing: { before: 480 }
     }));
 
-    // Page Break after Cover Page
-    children.push(new Paragraph({
-      children: [new PageBreak()]
-    }));
+    children.push(new Paragraph({ children: [new PageBreak()] }));
   }
 
-  // 2. Table of Contents Placeholder (if requested)
+  // 2. TOC
   if (config.includeToc) {
     children.push(new Paragraph({
       children: [
@@ -312,7 +345,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       keepNext: true
     }));
 
-    // Helper text for Word's native TOC or listing out the headings in the document explicitly
     children.push(new Paragraph({
       children: [
         new TextRun({
@@ -326,12 +358,10 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       spacing: { after: 240 }
     }));
 
-    // Let's programmatically generate a beautiful styled static Outline list of Heading 1s & Heading 2s!
-    // This is super helpful because it provides an immediate Table of Contents visible anywhere (including Google Docs).
     const headings = tokens.filter(t => t.type === 'heading' && t.depth <= 2);
     if (headings.length > 0) {
-      headings.forEach((h: any, idx: number) => {
-        const hText = h.text || '';
+      headings.forEach((h: any) => {
+        const hText = cleanMarkers(h.text || '');
         const levelIndent = h.depth === 2 ? 360 : 0;
         children.push(new Paragraph({
           indent: { left: levelIndent + 240, hanging: 240 },
@@ -376,20 +406,15 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       }));
     }
 
-    // Separator line after TOC
     children.push(new Paragraph({
       border: {
-        bottom: {
-          color: 'E5E7EB',
-          style: BorderStyle.SINGLE,
-          size: 4,
-        }
+        bottom: { color: 'E5E7EB', style: BorderStyle.SINGLE, size: 4 }
       },
       spacing: { after: 360 }
     }));
   }
 
-  // 3. Process All Elements
+  // 3. Process all elements
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
 
@@ -425,7 +450,7 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
           spacing: { before: beforeSpace, after: afterSpace },
           children: [
             new TextRun({
-              text: token.text,
+              text: cleanMarkers(token.text),
               font: config.fontHeading,
               size: pSize,
               bold: true,
@@ -442,24 +467,22 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
         children.push(new Paragraph({
           children: inlineRuns,
           spacing: {
-            line: Math.round(config.spacingLineHeight * 240), // 240 = single line, 360 = 1.5 line spacing
-            after: 110 // ~5.5pt space after paragraphs
+            line: Math.round(config.spacingLineHeight * 240),
+            after: 110
           }
         }));
         break;
       }
 
       case 'blockquote': {
-        // Block quotes represented as left-indented paragraphs with a beautiful grey left border
-        // Split blockquote text by lines or parse tokens
         const qTokens = token.tokens || [{ type: 'text', text: token.text }];
         children.push(new Paragraph({
-          indent: { left: 720 }, // 0.5 inches left spacing
+          indent: { left: 720 },
           border: {
             left: {
               color: config.accentColor,
               style: BorderStyle.SINGLE,
-              size: 24, // 3pt border
+              size: 24,
               space: 12
             }
           },
@@ -470,7 +493,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       }
 
       case 'code': {
-        // Code Block - Rendered as a single-cell 100% wide table with dark/light background
         const codeLines = token.text.split('\n');
         children.push(new Table({
           width: { size: 100, type: WidthType.PERCENTAGE },
@@ -492,7 +514,7 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
                         new TextRun({
                           text: line,
                           font: 'Courier New',
-                          size: 19, // 9.5pt
+                          size: 19,
                           color: '2563EB'
                         })
                       ],
@@ -504,7 +526,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
             })
           ]
         }));
-        // Gap paragraph
         children.push(new Paragraph({ spacing: { after: 120 } }));
         break;
       }
@@ -512,16 +533,16 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       case 'list': {
         const isOrdered = token.ordered;
         token.items.forEach((item: any, idx: number) => {
-          const reparsed = marked.lexer(item.text || '');
-          const inlineTokens = reparsed.length > 0 && reparsed[0].type === 'paragraph' && reparsed[0].tokens
-            ? reparsed[0].tokens
+          const reparsed = marked.lexer(preprocessMath(item.text || ''));
+          const resolved = resolveTokens(reparsed);
+          const inlineTokens = resolved.length > 0 && resolved[0].type === 'paragraph' && resolved[0].tokens
+            ? resolved[0].tokens
             : [{ type: 'text', text: item.text || '' }];
           const runs = parseInlineRuns(inlineTokens, config);
 
           if (isOrdered) {
-            // Ordered lists - left-indented with a manual number run prefix and tab
             children.push(new Paragraph({
-              indent: { left: 432, hanging: 288 }, // Perfect Word numbering alignment
+              indent: { left: 432, hanging: 288 },
               children: [
                 new TextRun({
                   text: `${idx + 1}.\t`,
@@ -535,7 +556,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
               spacing: { after: 60 }
             }));
           } else {
-            // Bulleted items
             children.push(new Paragraph({
               children: runs,
               bullet: { level: 0 },
@@ -543,7 +563,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
             }));
           }
         });
-        // Small spacing gap after list
         children.push(new Paragraph({ spacing: { after: 80 } }));
         break;
       }
@@ -560,7 +579,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
             insideVertical: { style: BorderStyle.SINGLE, size: 4, color: 'F1F5F9' }
           },
           rows: [
-            // Header Row
             new TableRow({
               tableHeader: true,
               children: token.header.map((col: any) => (
@@ -576,12 +594,11 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
                 })
               ))
             }),
-            // Body rows with alternating backgrounds (zebra striping)
             ...token.rows.map((row: any[], rIdx: number) => (
               new TableRow({
                 children: row.map((cell: any) => (
                   new TableCell({
-                    shading: rIdx % 2 === 1 ? { fill: 'F8FAFC' } : undefined, // slate-50 background of alternate row
+                    shading: rIdx % 2 === 1 ? { fill: 'F8FAFC' } : undefined,
                     margins: { top: 110, bottom: 110, left: 140, right: 140 },
                     children: [
                       new Paragraph({
@@ -595,7 +612,6 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
             ))
           ]
         }));
-        // Gap after table
         children.push(new Paragraph({ spacing: { after: 140 } }));
         break;
       }
@@ -603,89 +619,75 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
       case 'hr': {
         children.push(new Paragraph({
           border: {
-            bottom: {
-              color: 'D1D5DB',
-              style: BorderStyle.SINGLE,
-              size: 8, // thin line
-            }
+            bottom: { color: 'D1D5DB', style: BorderStyle.SINGLE, size: 8 }
           },
           spacing: { before: 180, after: 180 }
         }));
         break;
       }
 
-      case 'html': {
-        const bm = token.text.match(/^<!--BM:(.*?)-->$/);
-        if (bm) {
-          children.push(new Table({
-            width: { size: 100, type: WidthType.PERCENTAGE },
-            borders: {
-              top: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-              bottom: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-              left: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-              right: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
-            },
-            rows: [
-              new TableRow({
-                children: [
-                  new TableCell({
-                    shading: { fill: 'F5F3FF' },
-                    margins: { top: 120, bottom: 120, left: 160, right: 160 },
-                    children: [
-                      new Paragraph({
-                        alignment: AlignmentType.CENTER,
-                        children: [
-                          new TextRun({
-                            text: decodeURIComponent(bm[1]),
-                            font: 'Cambria Math',
-                            size: 22,
-                            italics: true,
-                            color: '5B21B6',
-                          })
-                        ],
-                        spacing: { before: 0, after: 0 }
-                      })
-                    ]
-                  })
-                ]
-              })
-            ]
-          }));
-          children.push(new Paragraph({ spacing: { after: 120 } }));
-          break;
-        }
-        break; // skip other HTML
+      case 'mathBlock': {
+        children.push(new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          borders: {
+            top: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+            bottom: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+            left: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+            right: { style: BorderStyle.SINGLE, size: 4, color: 'DDD6FE' },
+          },
+          rows: [
+            new TableRow({
+              children: [
+                new TableCell({
+                  shading: { fill: 'F5F3FF' },
+                  margins: { top: 120, bottom: 120, left: 160, right: 160 },
+                  children: [
+                    new Paragraph({
+                      alignment: AlignmentType.CENTER,
+                      children: [
+                        new TextRun({
+                          text: token.text,
+                          font: 'Cambria Math',
+                          size: 22,
+                          italics: true,
+                          color: '5B21B6',
+                        })
+                      ],
+                      spacing: { before: 0, after: 0 }
+                    })
+                  ]
+                })
+              ]
+            })
+          ]
+        }));
+        children.push(new Paragraph({ spacing: { after: 120 } }));
+        break;
       }
 
       default:
-        // Skip unhandled tokens like 'space'
         break;
     }
   }
 
-  // 4. Margins Definition (Twips: 1 inch = 1440)
-  let docMargins = { top: 1440, bottom: 1440, left: 1440, right: 1440 }; // Default Normal
+  // 4. Margins
+  let docMargins = { top: 1440, bottom: 1440, left: 1440, right: 1440 };
   if (config.marginSize === 'narrow') {
     docMargins = { top: 720, bottom: 720, left: 720, right: 720 };
   } else if (config.marginSize === 'wide') {
     docMargins = { top: 2160, bottom: 2160, left: 2160, right: 2160 };
   }
 
-  // 5. Build Document Sections with custom properties
+  // 5. Build document
   const doc = new Document({
     sections: [
       {
         properties: {
           page: {
             margin: docMargins,
-            size: {
-              orientation: config.orientation, // 'portrait' | 'landscape'
-            }
+            size: { orientation: config.orientation }
           }
         },
-        // Wait, Header & Footer can be configured if we write them simple.
-        // For standard client-side docx, header and footers are optional, but if specified, 
-        // they add a gorgeous touch of custom formatting.
         headers: config.headerText ? {
           default: new Header({
             children: [
@@ -695,7 +697,7 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
                   new TextRun({
                     text: config.headerText,
                     font: config.fontBody,
-                    size: 16, // 8pt
+                    size: 16,
                     color: '9CA3AF'
                   })
                 ],
@@ -711,33 +713,13 @@ export async function convertMarkdownToDocx(markdown: string, config: DocxStyleC
                 alignment: AlignmentType.CENTER,
                 children: [
                   ...(config.footerText ? [
-                    new TextRun({
-                      text: config.footerText,
-                      font: config.fontBody,
-                      size: 16,
-                      color: '9CA3AF'
-                    })
+                    new TextRun({ text: config.footerText, font: config.fontBody, size: 16, color: '9CA3AF' })
                   ] : []),
                   ...(config.footerText && config.pageNumbers ? [
-                    new TextRun({
-                      text: '  |  ',
-                      font: config.fontBody,
-                      size: 16,
-                      color: 'D1D5DB'
-                    })
+                    new TextRun({ text: '  |  ', font: config.fontBody, size: 16, color: 'D1D5DB' })
                   ] : []),
                   ...(config.pageNumbers ? [
-                    new TextRun({
-                      text: 'Page ',
-                      font: config.fontBody,
-                      size: 16,
-                      color: '9CA3AF'
-                    }),
-                    // Dynamic Page Number fields can be added in Word, but simple text run is standard,
-                    // or we can use DOCX Page Number native elements. Let's keep it safe. 
-                    // In docx, we can inject native PageNumbering fields! Let's check how:
-                    // Word native field: TextRun({ children: [PageNumber.CURRENT] }) is possible too.
-                    // For broad client-side compatibility, let's keep page numbering setup elegant.
+                    new TextRun({ text: 'Page ', font: config.fontBody, size: 16, color: '9CA3AF' }),
                   ] : [])
                 ],
                 spacing: { before: 120 }
