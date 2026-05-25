@@ -37,7 +37,7 @@ const CMD: Record<string, string> = {
   '\\psi': 'ψ', '\\omega': 'ω', '\\Gamma': 'Γ', '\\Theta': 'Θ',
   '\\Lambda': 'Λ', '\\Xi': 'Ξ', '\\Pi': 'Π', '\\Sigma': 'Σ',
   '\\Phi': 'Φ', '\\Psi': 'Ψ', '\\Omega': 'Ω', '\\lim': 'lim',
-  '\\circ': '°',
+  '\\circ': '°', '\\sqrt': '√',
 };
 
 function ommRun(text: string): any {
