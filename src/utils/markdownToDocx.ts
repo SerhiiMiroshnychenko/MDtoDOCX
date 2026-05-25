@@ -297,36 +297,69 @@ function parseInlineRuns(tokens: any[], config: DocxStyleConfig, overrides: any 
         break;
       case 'text':
       default: {
-        const parts = resolveInlineText(token.text || '');
-        for (const part of parts) {
-          if (part.type === 'math') {
-            try {
-              const ommChildren = astToOMML(part.text);
-              runs.push(new OMML({ children: ommChildren }));
-            } catch {
+        const text = token.text || '';
+        // Workaround for marked v18 not parsing **bold** inside list items.
+        // Split by **...** FIRST (before math markers) so delimiters
+        // don't get fragmented across math-marker boundaries.
+        const boldSegs = text.split(/\*\*(.+?)\*\*/g);
+        if (boldSegs.length > 1) {
+          for (let i = 0; i < boldSegs.length; i++) {
+            if (!boldSegs[i]) continue;
+            const isBold = i % 2 === 1;
+            const innerParts = resolveInlineText(boldSegs[i]);
+            for (const p of innerParts) {
+              if (p.type === 'math') {
+                try {
+                  const ommChildren = astToOMML(p.text);
+                  runs.push(new OMML({ children: ommChildren }));
+                } catch {
+                  runs.push(new TextRun({
+                    text: p.text,
+                    font: 'Cambria Math',
+                    size: config.fontSizeBody * 2,
+                    italics: true,
+                    color: '7C3AED',
+                    shading: { fill: 'F5F3FF' },
+                    ...overrides
+                  }));
+                }
+              } else {
+                runs.push(new TextRun({
+                  text: p.text,
+                  font: config.fontBody,
+                  size: config.fontSizeBody * 2,
+                  color: '1F2937',
+                  ...overrides,
+                  ...(isBold ? { bold: true } : {})
+                }));
+              }
+            }
+          }
+        } else {
+          const parts = resolveInlineText(text);
+          for (const part of parts) {
+            if (part.type === 'math') {
+              try {
+                const ommChildren = astToOMML(part.text);
+                runs.push(new OMML({ children: ommChildren }));
+              } catch {
+                runs.push(new TextRun({
+                  text: part.text,
+                  font: 'Cambria Math',
+                  size: config.fontSizeBody * 2,
+                  italics: true,
+                  color: '7C3AED',
+                  shading: { fill: 'F5F3FF' },
+                  ...overrides
+                }));
+              }
+            } else {
               runs.push(new TextRun({
                 text: part.text,
-                font: 'Cambria Math',
-                size: config.fontSizeBody * 2,
-                italics: true,
-                color: '7C3AED',
-                shading: { fill: 'F5F3FF' },
-                ...overrides
-              }));
-            }
-          } else {
-            // Workaround for marked v18 not parsing **bold** inside list items:
-            // manually handle **...** markers in text content.
-            const segs = part.text.split(/\*\*(.+?)\*\*/g);
-            for (let i = 0; i < segs.length; i++) {
-              if (!segs[i]) continue;
-              runs.push(new TextRun({
-                text: segs[i],
                 font: config.fontBody,
                 size: config.fontSizeBody * 2,
                 color: '1F2937',
-                ...overrides,
-                ...(i % 2 === 1 ? { bold: true } : {})
+                ...overrides
               }));
             }
           }
